@@ -4,15 +4,19 @@
 # macOS ties Accessibility / Input Monitoring grants to the code signature.
 # With ad-hoc signing every rebuild looks like a new app and you must re-grant.
 # Run scripts/create-signing-cert.sh once to get a stable local identity.
+# UNIVERSAL=1 builds for both Apple silicon and Intel (used by release.sh).
 set -euo pipefail
 cd "${0:A:h}/.."
 
 IDENTITY_NAME="MouseDriver Local Signing"
 APP=build/MouseDriver.app
 
-swift build -c release --product MouseDriver
-swift build -c release --product flowctl
-BIN=$(swift build -c release --show-bin-path)
+ARCH_FLAGS=()
+[[ "${UNIVERSAL:-0}" == 1 ]] && ARCH_FLAGS=(--arch arm64 --arch x86_64)
+
+swift build -c release $ARCH_FLAGS --product MouseDriver
+swift build -c release $ARCH_FLAGS --product flowctl
+BIN=$(swift build -c release $ARCH_FLAGS --show-bin-path)
 
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"

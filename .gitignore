@@ -4,3 +4,4 @@ build/
 *.xcodeproj
 docs/reference/
 .DS_Store
+dist/
