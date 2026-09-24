@@ -55,8 +55,7 @@ final class AppModel {
     // MARK: Permissions
 
     var accessibilityGranted = AXIsProcessTrusted()
-    var inputMonitoringGranted = IOHIDCheckAccess(kIOHIDRequestTypeListenEvent) == kIOHIDAccessTypeGranted
-    var permissionsGranted: Bool { accessibilityGranted && inputMonitoringGranted }
+    var permissionsGranted: Bool { accessibilityGranted }
 
     // MARK: Button capture ("press a button on your mouse")
 
@@ -150,7 +149,6 @@ final class AppModel {
 
     func refreshPermissions() {
         accessibilityGranted = AXIsProcessTrusted()
-        inputMonitoringGranted = IOHIDCheckAccess(kIOHIDRequestTypeListenEvent) == kIOHIDAccessTypeGranted
     }
 
     func requestAccessibility() {
@@ -159,19 +157,13 @@ final class AppModel {
         openPrivacyPane("Privacy_Accessibility")
     }
 
-    func requestInputMonitoring() {
-        if !IOHIDRequestAccess(kIOHIDRequestTypeListenEvent) {
-            openPrivacyPane("Privacy_ListenEvent")
-        }
-    }
-
     private func openPrivacyPane(_ anchor: String) {
         if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?\(anchor)") {
             NSWorkspace.shared.open(url)
         }
     }
 
-    /// Drops our entry for a TCC service ("Accessibility", "ListenEvent"), which
+    /// Drops our entry for a TCC service (such as "Accessibility"), which
     /// clears grants left over from an older build with a different signature.
     func resetPermission(_ service: String) {
         guard let bundleID = Bundle.main.bundleIdentifier else { return }
@@ -188,22 +180,6 @@ final class AppModel {
             lastError = "Couldn't run tccutil: \(error.localizedDescription)"
         }
         refreshPermissions()
-    }
-
-    /// Input Monitoring only applies to a process started after the grant.
-    func relaunch() {
-        let configuration = NSWorkspace.OpenConfiguration()
-        configuration.createsNewApplicationInstance = true
-        engine.stop()
-        NSWorkspace.shared.openApplication(at: Bundle.main.bundleURL, configuration: configuration) { _, error in
-            DispatchQueue.main.async {
-                if let error {
-                    log.error("relaunch failed: \(error.localizedDescription, privacy: .public)")
-                    return
-                }
-                NSApp.terminate(nil)
-            }
-        }
     }
 
     // MARK: Capture

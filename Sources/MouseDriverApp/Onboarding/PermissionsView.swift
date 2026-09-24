@@ -5,19 +5,12 @@ struct PermissionsView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text("MouseDriver needs two permissions to customise your mouse")
+            Text("MouseDriver needs one permission to customise your mouse")
                 .font(.headline)
-            row(
-                granted: model.inputMonitoringGranted,
-                title: "Input Monitoring",
-                detail: "To see which buttons on your mouse you press. Takes effect after a relaunch.",
-                service: "ListenEvent",
-                action: model.requestInputMonitoring
-            )
             row(
                 granted: model.accessibilityGranted,
                 title: "Accessibility",
-                detail: "To change what those buttons and the wheel do.",
+                detail: "To change what your mouse's buttons and wheel do. MouseDriver only watches mouse events and never reads your keyboard.",
                 service: "Accessibility",
                 action: model.requestAccessibility
             )
@@ -28,10 +21,7 @@ struct PermissionsView: View {
             .font(.caption)
             .foregroundStyle(.secondary)
             .fixedSize(horizontal: false, vertical: true)
-            HStack {
-                Button("Re-check") { model.startEngineWhenPermitted() }
-                Button("Relaunch MouseDriver") { model.relaunch() }
-            }
+            Button("Re-check") { model.startEngineWhenPermitted() }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
