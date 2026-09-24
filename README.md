@@ -16,6 +16,14 @@ There are two layers:
    In the config, buttons use HID numbering: 1 left, 2 right, 3 middle, 4 back, 5 forward. Wheel tilt and the DPI button can't be remapped because the mouse never reports them to the Mac.
 2. **Onboard settings (experimental). Needs the 2.4G dongle or USB cable.** DPI levels, polling rate, lighting, sleep timer and the onboard button map. These are written to the mouse's own memory using the protocol in [docs/protocol.md](docs/protocol.md). The protocol matches the vendor web app's code, but it hasn't been tried on a real dongle yet, so it's off by default. To turn it on, run `defaults write com.barathwaj.mousedriver experimentalHardware -bool true` and relaunch the app to get the Hardware tab. For the CLI, add `--experimental` to `flowctl hw` commands.
 
+## Install
+
+Download the latest zip from [Releases](https://github.com/barath-dev/xs-flow-mac/releases), unzip it, and move **MouseDriver.app** to Applications. It needs macOS 14 or later and runs on Apple silicon and Intel.
+
+The beta isn't notarized, so the first time you open it macOS will block it. Go to **System Settings → Privacy & Security** and click **Open Anyway**.
+
+**Known issue:** if another mouse is connected at the same time, its wheel and extra buttons get the XS Flow's settings too. This will be fixed in the next version.
+
 ## Build & run
 
 ```sh
