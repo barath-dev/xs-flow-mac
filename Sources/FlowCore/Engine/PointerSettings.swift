@@ -2,57 +2,51 @@ import Foundation
 import IOKit.hid
 
 /// Applies per-device tracking speed / scroll acceleration through the HID event
-/// system, leaving the trackpad and other mice alone. Remembers the original
-/// values so they can be restored.
+/// system, leaving the trackpad and unselected mice alone. Remembers each
+/// device's original values so they can be restored.
 public final class PointerApplier {
-    private let client = IOHIDEventSystemClientCreateSimpleClient(kCFAllocatorDefault)
-    private var originals: [String: CFTypeRef] = [:]
+    private let registry: PointingDeviceRegistry
+    private var originals: [UInt64: [String: CFTypeRef]] = [:]
 
     static let trackingKey = kIOHIDMouseAccelerationTypeKey   // "HIDMouseAcceleration", 16.16 fixed point
     static let scrollKey = kIOHIDMouseScrollAccelerationKey   // "HIDMouseScrollAcceleration"
 
-    public init() {}
-
-    private func services() -> [IOHIDServiceClient] {
-        guard let all = IOHIDEventSystemClientCopyServices(client) as? [IOHIDServiceClient] else { return [] }
-        return all.filter { service in
-            let vid = IOHIDServiceClientCopyProperty(service, kIOHIDVendorIDKey as CFString) as? Int ?? 0
-            let pid = IOHIDServiceClientCopyProperty(service, kIOHIDProductIDKey as CFString) as? Int ?? 0
-            let page = IOHIDServiceClientCopyProperty(service, kIOHIDPrimaryUsagePageKey as CFString) as? Int ?? 0
-            let usage = IOHIDServiceClientCopyProperty(service, kIOHIDPrimaryUsageKey as CFString) as? Int ?? 0
-            return KnownDevices.match(vendorID: vid, productID: pid) != nil
-                && page == kHIDPage_GenericDesktop && usage == kHIDUsage_GD_Mouse
-        }
+    public init(registry: PointingDeviceRegistry = PointingDeviceRegistry()) {
+        self.registry = registry
     }
 
-    /// Current tracking speed of the mouse (0…3), if connected.
-    public var currentTrackingSpeed: Double? {
-        guard let service = services().first,
+    /// Current tracking speed (0…3) of the first matching mouse, if one is connected.
+    public func currentTrackingSpeed(where include: (PointingDevice) -> Bool = { $0.isExternalMouse }) -> Double? {
+        guard let service = registry.services().first(where: { include($0.device) })?.service,
               let raw = IOHIDServiceClientCopyProperty(service, Self.trackingKey as CFString) as? Int else { return nil }
         return Double(raw) / 65536
     }
 
-    public func apply(_ settings: PointerSettings) {
-        set(Self.trackingKey, settings.trackingSpeed)
-        set(Self.scrollKey, settings.scrollAcceleration)
+    /// Applies `settings` to the mice `managed` accepts and restores every other mouse.
+    public func apply(_ settings: PointerSettings, managed: (PointingDevice) -> Bool) {
+        for (service, device) in registry.services() where device.isExternalMouse {
+            let on = managed(device)
+            set(service, device.registryID, Self.trackingKey, on ? settings.trackingSpeed : nil)
+            set(service, device.registryID, Self.scrollKey, on ? settings.scrollAcceleration : nil)
+        }
     }
 
-    private func set(_ key: String, _ value: Double?) {
-        for service in services() {
-            if originals[key] == nil, let original = IOHIDServiceClientCopyProperty(service, key as CFString) {
-                originals[key] = original
+    private func set(_ service: IOHIDServiceClient, _ id: UInt64, _ key: String, _ value: Double?) {
+        if let value {
+            if originals[id]?[key] == nil, let original = IOHIDServiceClientCopyProperty(service, key as CFString) {
+                originals[id, default: [:]][key] = original
             }
-            if let value {
-                IOHIDServiceClientSetProperty(service, key as CFString, Int(value * 65536) as CFNumber)
-            } else if let original = originals.removeValue(forKey: key) {
-                IOHIDServiceClientSetProperty(service, key as CFString, original)
-            }
+            IOHIDServiceClientSetProperty(service, key as CFString, Int(value * 65536) as CFNumber)
+        } else if let original = originals[id]?.removeValue(forKey: key) {
+            IOHIDServiceClientSetProperty(service, key as CFString, original)
         }
     }
 
     public func restore() {
-        for (key, value) in originals {
-            for service in services() { IOHIDServiceClientSetProperty(service, key as CFString, value) }
+        for (service, device) in registry.services() {
+            for (key, value) in originals[device.registryID] ?? [:] {
+                IOHIDServiceClientSetProperty(service, key as CFString, value)
+            }
         }
         originals.removeAll()
     }

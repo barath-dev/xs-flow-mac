@@ -10,7 +10,7 @@ struct PermissionsView: View {
             row(
                 granted: model.inputMonitoringGranted,
                 title: "Input Monitoring",
-                detail: "To see which buttons on the XS Flow you press. Takes effect after a relaunch.",
+                detail: "To see which buttons on your mouse you press. Takes effect after a relaunch.",
                 service: "ListenEvent",
                 action: model.requestInputMonitoring
             )

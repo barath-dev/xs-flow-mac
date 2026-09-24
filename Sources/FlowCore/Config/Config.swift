@@ -141,7 +141,7 @@ public struct ButtonBinding: Codable, Hashable, Sendable, Identifiable {
 }
 
 public struct ScrollSettings: Codable, Hashable, Sendable {
-    /// Flip the wheel for this mouse only (the trackpad keeps the system setting).
+    /// Flip the wheel for the customised mice only (the trackpad keeps the system setting).
     public var reverseVertical = false
     public var reverseHorizontal = false
     /// Multiplier on wheel deltas. 1 = system behaviour.
@@ -173,9 +173,9 @@ public struct Profile: Codable, Hashable, Sendable, Identifiable {
 }
 
 public struct PointerSettings: Codable, Hashable, Sendable {
-    /// Tracking speed for this mouse only, 0…3 like the System Settings slider. nil = leave untouched.
+    /// Tracking speed for the customised mice only, 0…3 like the System Settings slider. nil = leave untouched.
     public var trackingSpeed: Double?
-    /// Scroll acceleration for this mouse only. nil = leave untouched.
+    /// Scroll acceleration for the customised mice only. nil = leave untouched.
     public var scrollAcceleration: Double?
 
     public init(trackingSpeed: Double? = nil, scrollAcceleration: Double? = nil) {
@@ -190,12 +190,21 @@ public struct Config: Codable, Hashable, Sendable {
     public var pointer = PointerSettings()
     /// profiles[0] is the default profile; the rest are per-app overrides.
     public var profiles: [Profile]
+    /// Mice switched off in Settings. Every other external mouse is customised.
+    public var excludedDevices: [DeviceID] = []
 
-    public init(enabled: Bool = true, scroll: ScrollSettings = ScrollSettings(), pointer: PointerSettings = PointerSettings(), profiles: [Profile]) {
+    public init(enabled: Bool = true, scroll: ScrollSettings = ScrollSettings(), pointer: PointerSettings = PointerSettings(),
+                profiles: [Profile], excludedDevices: [DeviceID] = []) {
         self.enabled = enabled
         self.scroll = scroll
         self.pointer = pointer
         self.profiles = profiles.isEmpty ? [Profile(name: "Default")] : profiles
+        self.excludedDevices = excludedDevices
+    }
+
+    /// Whether the settings apply to `device`.
+    public func manages(_ device: PointingDevice) -> Bool {
+        device.isExternalMouse && !excludedDevices.contains(device.model)
     }
 
     public static let `default` = Config(profiles: [
@@ -265,7 +274,8 @@ extension Config {
             enabled: try c.decodeIfPresent(Bool.self, forKey: .enabled) ?? true,
             scroll: try c.decodeIfPresent(ScrollSettings.self, forKey: .scroll) ?? ScrollSettings(),
             pointer: try c.decodeIfPresent(PointerSettings.self, forKey: .pointer) ?? PointerSettings(),
-            profiles: try c.decodeIfPresent([Profile].self, forKey: .profiles) ?? []
+            profiles: try c.decodeIfPresent([Profile].self, forKey: .profiles) ?? [],
+            excludedDevices: try c.decodeIfPresent([DeviceID].self, forKey: .excludedDevices) ?? []
         )
     }
 }

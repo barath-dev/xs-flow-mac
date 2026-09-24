@@ -1,15 +1,21 @@
 import Foundation
 import IOKit.hid
 
-/// One HID interface of a recognised XS Flow mouse. A dongle exposes several
-/// interfaces (mouse, keyboard, vendor), each shows up as its own `HIDInterface`.
+/// One HID interface of an external mouse. An XS Flow dongle exposes several
+/// interfaces (mouse, keyboard, vendor); each shows up as its own `HIDInterface`.
 public final class HIDInterface: @unchecked Sendable, Hashable {
     public let device: IOHIDDevice
-    public let known: KnownDevice
+    /// Set for the Amkette XS Flow, which has extra hardware support.
+    public let known: KnownDevice?
 
-    init(device: IOHIDDevice, known: KnownDevice) {
+    init(device: IOHIDDevice, known: KnownDevice?) {
         self.device = device
         self.known = known
+    }
+
+    public var transport: Transport {
+        if let known { return known.transport }
+        return transportName.hasPrefix("Bluetooth") ? .bluetooth : .wired
     }
 
     public var product: String { property(kIOHIDProductKey) ?? "Unknown" }
@@ -21,19 +27,27 @@ public final class HIDInterface: @unchecked Sendable, Hashable {
 
     /// The Elan vendor interface: the one declaring feature report 6 (the command channel).
     public var isConfigInterface: Bool {
-        known.supportsHardwareConfig && maxFeatureReportSize > 1
+        known?.supportsHardwareConfig == true && maxFeatureReportSize > 1
             && ReportDescriptor.featureReportIDs(in: reportDescriptor).contains(6)
     }
 
-    func property<T>(_ key: String) -> T? {
+    public func property<T>(_ key: String) -> T? {
         IOHIDDeviceGetProperty(device, key as CFString) as? T
     }
 
-    public static func == (lhs: HIDInterface, rhs: HIDInterface) -> Bool { lhs.device == rhs.device }
-    public func hash(into hasher: inout Hasher) { hasher.combine(CFHash(device)) }
+    /// IOHIDManager can hand out two IOHIDDevice objects for one interface when it
+    /// matches several dictionaries, so identity is the underlying IOKit service.
+    public var registryID: UInt64 {
+        var id: UInt64 = 0
+        IORegistryEntryGetRegistryEntryID(IOHIDDeviceGetService(device), &id)
+        return id
+    }
+
+    public static func == (lhs: HIDInterface, rhs: HIDInterface) -> Bool { lhs.registryID == rhs.registryID }
+    public func hash(into hasher: inout Hasher) { hasher.combine(registryID) }
 }
 
-/// A single HID input value change from one of our mice.
+/// A single HID input value change from an external mouse.
 public struct HIDInputEvent: Sendable {
     public let usagePage: Int
     public let usage: Int
@@ -41,6 +55,7 @@ public struct HIDInputEvent: Sendable {
     /// Mach absolute time, same clock as `CGEvent.timestamp`.
     public let timestamp: UInt64
     public let transport: Transport
+    public let product: String
 
     public var isButton: Bool { usagePage == kHIDPage_Button }
     public var isWheel: Bool { usagePage == kHIDPage_GenericDesktop && usage == kHIDUsage_GD_Wheel }
@@ -57,7 +72,8 @@ public struct HIDInputEvent: Sendable {
     }
 }
 
-/// Watches for XS Flow mice via IOHIDManager and reports their raw input.
+/// Watches for external mice (and the XS Flow's extra interfaces) via IOHIDManager
+/// and reports their raw input.
 /// Must be used from the main thread (callbacks are scheduled on the main run loop).
 public final class DeviceMonitor {
     public private(set) var interfaces: Set<HIDInterface> = []
@@ -71,7 +87,7 @@ public final class DeviceMonitor {
 
     /// Connected transports, one entry per physical connection.
     public var transports: [Transport] {
-        Array(Set(interfaces.map(\.known.transport))).sorted { $0.rawValue < $1.rawValue }
+        Array(Set(interfaces.map(\.transport))).sorted { $0.rawValue < $1.rawValue }
     }
 
     public var configInterface: HIDInterface? { interfaces.first(where: \.isConfigInterface) }
@@ -80,7 +96,8 @@ public final class DeviceMonitor {
     /// works without the Input Monitoring permission.
     @discardableResult
     public func start(readInput: Bool = true) -> IOReturn {
-        IOHIDManagerSetDeviceMatchingMultiple(manager, KnownDevices.matchingDictionaries as CFArray)
+        let mice: [String: Any] = [kIOHIDDeviceUsagePageKey: kHIDPage_GenericDesktop, kIOHIDDeviceUsageKey: kHIDUsage_GD_Mouse]
+        IOHIDManagerSetDeviceMatchingMultiple(manager, ([mice] + KnownDevices.matchingDictionaries) as CFArray)
         let context = Unmanaged.passUnretained(self).toOpaque()
 
         IOHIDManagerRegisterDeviceMatchingCallback(manager, { context, _, _, device in
@@ -110,19 +127,25 @@ public final class DeviceMonitor {
     private func deviceAdded(_ device: IOHIDDevice) {
         let vid = IOHIDDeviceGetProperty(device, kIOHIDVendorIDKey as CFString) as? Int ?? 0
         let pid = IOHIDDeviceGetProperty(device, kIOHIDProductIDKey as CFString) as? Int ?? 0
-        guard let known = KnownDevices.match(vendorID: vid, productID: pid) else { return }
-        interfaces.insert(HIDInterface(device: device, known: known))
+        let known = KnownDevices.match(vendorID: vid, productID: pid)
+        let builtIn = IOHIDDeviceGetProperty(device, kIOHIDBuiltInKey as CFString) as? Bool ?? false
+        guard known != nil || !builtIn else { return }
+        let iface = HIDInterface(device: device, known: known)
+        guard !interfaces.contains(iface) else { return }
+        interfaces.insert(iface)
         onChange?()
     }
 
     private func deviceRemoved(_ device: IOHIDDevice) {
-        interfaces = interfaces.filter { $0.device != device }
+        let removed = HIDInterface(device: device, known: nil)
+        interfaces = interfaces.filter { $0 != removed && $0.device != device }
         onChange?()
     }
 
     private func inputValue(_ value: IOHIDValue, sender: UnsafeMutableRawPointer?) {
         let element = IOHIDValueGetElement(value)
         let device = IOHIDElementGetDevice(element)
+        // Only the stored object of each interface reports, so input from a duplicate is dropped here.
         guard let iface = interfaces.first(where: { $0.device == device }) else { return }
         // Ignore array/padding elements and relative values that report zero.
         let page = Int(IOHIDElementGetUsagePage(element))
@@ -135,7 +158,8 @@ public final class DeviceMonitor {
             usage: usage,
             value: intValue,
             timestamp: IOHIDValueGetTimeStamp(value),
-            transport: iface.known.transport
+            transport: iface.transport,
+            product: iface.product
         ))
     }
 }

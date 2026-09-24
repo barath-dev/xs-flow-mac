@@ -1,57 +1,53 @@
 import AppKit
 import CoreGraphics
 
-/// Ties everything together: watches the mouse, intercepts its events and
-/// applies the current config. Main-thread only.
+/// Ties everything together: intercepts mouse events, works out which mouse sent
+/// each one, and applies the current config to the mice it manages. Main-thread only.
 public final class MappingEngine {
     public var config: Config {
         didSet { applyPointerSettings() }
     }
 
+    /// Only used for connect/disconnect notifications; no input is read.
     public let monitor = DeviceMonitor()
+    public let registry = PointingDeviceRegistry()
     public private(set) var isRunning = false
     public private(set) var frontmostBundleID: String?
 
-    /// Every raw HID event from the mouse, for "press a button to capture" UIs.
-    public var onRawInput: ((HIDInputEvent) -> Void)?
     public var onDevicesChanged: (() -> Void)?
     /// Called for each action the engine performs, for logging.
     public var onAction: ((Int, Action) -> Void)?
-    /// Called for every physical button press on the mouse (HID numbering).
-    public var onButtonPress: ((Int) -> Void)?
+    /// Called for every button press on an external mouse (HID numbering: 1 = left).
+    public var onButtonPress: ((Int, PointingDevice) -> Void)?
 
-    private let correlator = DeviceCorrelator()
     private let performer = ActionPerformer()
-    private let pointer = PointerApplier()
+    private lazy var pointer = PointerApplier(registry: registry)
     private lazy var tap = EventTap { [unowned self] type, event in self.handle(type, event) }
     private var appObserver: NSObjectProtocol?
 
     /// Buttons whose press we handled, with the action chosen at press time.
     private var active: [Int: Action] = [:]
     private var scrollModifier: ScrollModifier?
+    private var captureHandler: ((Int) -> Void)?
+    /// A captured button whose release we still have to swallow.
+    private var capturedButton: Int?
 
     public init(config: Config) {
         self.config = config
     }
 
     public enum StartError: Error {
-        case inputMonitoringDenied
         case accessibilityDenied
     }
 
     public func start() throws {
         guard !isRunning else { return }
-        monitor.onInput = { [unowned self] event in
-            correlator.record(event)
-            if event.isButton && event.value != 0 { onButtonPress?(event.usage) }
-            onRawInput?(event)
-        }
         monitor.onChange = { [unowned self] in
-            correlator.isConnected = !monitor.interfaces.isEmpty
+            registry.invalidate()
             applyPointerSettings()
             onDevicesChanged?()
         }
-        guard monitor.start() == kIOReturnSuccess else { throw StartError.inputMonitoringDenied }
+        monitor.start(readInput: false)
         guard tap.start() else {
             monitor.stop()
             throw StartError.accessibilityDenied
@@ -75,12 +71,24 @@ public final class MappingEngine {
         if let appObserver { NSWorkspace.shared.notificationCenter.removeObserver(appObserver) }
         active.removeAll()
         scrollModifier = nil
+        cancelCapture()
         isRunning = false
     }
 
+    /// Calls `handler` with the next non-left button pressed on an external mouse
+    /// and swallows that press. Left clicks pass through so the UI stays usable.
+    public func captureNextButton(_ handler: @escaping (Int) -> Void) {
+        captureHandler = handler
+    }
+
+    public func cancelCapture() {
+        captureHandler = nil
+    }
+
     private func applyPointerSettings() {
-        guard isRunning || !monitor.interfaces.isEmpty else { return }
-        pointer.apply(config.pointer)
+        guard isRunning else { return }
+        let config = config
+        pointer.apply(config.pointer) { config.manages($0) }
     }
 
     // MARK: Event handling
@@ -107,7 +115,15 @@ public final class MappingEngine {
 
     private func buttonDown(_ event: CGEvent) -> CGEvent? {
         let button = hidButton(event)
-        guard correlator.isOurs(button: button, down: true),
+        guard let device = registry.device(for: event), device.isExternalMouse else { return event }
+        onButtonPress?(button, device)
+        if let handler = captureHandler, button != 1 {
+            captureHandler = nil
+            capturedButton = button
+            handler(button)
+            return nil
+        }
+        guard config.manages(device),
               let action = config.action(forButton: button, bundleID: frontmostBundleID)
         else { return event }
 
@@ -127,6 +143,10 @@ public final class MappingEngine {
 
     private func buttonUp(_ event: CGEvent) -> CGEvent? {
         let button = hidButton(event)
+        if button == capturedButton {
+            capturedButton = nil
+            return nil
+        }
         guard let action = active.removeValue(forKey: button) else { return event }
         switch action {
         case .mouseButton(let target):
@@ -155,7 +175,7 @@ public final class MappingEngine {
 
     private func scroll(_ event: CGEvent) -> CGEvent? {
         let continuous = event.getIntegerValueField(.scrollWheelEventIsContinuous) != 0
-        guard !continuous, correlator.isOursScroll() else { return event }
+        guard !continuous, let device = registry.device(for: event), config.manages(device) else { return event }
         ScrollProcessor.process(event, settings: config.scrollSettings(bundleID: frontmostBundleID), modifier: scrollModifier)
         return event
     }

@@ -27,7 +27,7 @@ struct MouseDriverApp: App {
             MenuBarView()
                 .environment(model)
         } label: {
-            Image(systemName: model.transports.isEmpty ? "computermouse" : "computermouse.fill")
+            Image(systemName: model.mice.isEmpty ? "computermouse" : "computermouse.fill")
         }
 
         Window("MouseDriver", id: "settings") {

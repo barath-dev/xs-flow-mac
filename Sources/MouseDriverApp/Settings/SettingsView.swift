@@ -18,6 +18,8 @@ struct SettingsView: View {
                 Divider()
             }
             TabView {
+                MiceView()
+                    .tabItem { Label("Mice", systemImage: "computermouse.fill") }
                 ButtonsView()
                     .tabItem { Label("Buttons", systemImage: "computermouse") }
                 ScrollSettingsView()
@@ -46,10 +48,7 @@ struct GeneralView: View {
         Form {
             Toggle("Enable remapping", isOn: $model.config.enabled)
             Toggle("Launch at login", isOn: $model.launchAtLogin)
-            LabeledContent("Mouse", value: model.connectionSummary)
-            if let battery = model.batteryPercent {
-                LabeledContent("Battery", value: "\(battery)%")
-            }
+            LabeledContent("Mice", value: model.connectionSummary)
             LabeledContent("Engine", value: model.engineRunning ? "Running" : "Stopped")
             LabeledContent("Config file") {
                 Button(model.store.url.path) {

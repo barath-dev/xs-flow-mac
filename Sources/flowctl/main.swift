@@ -1,16 +1,17 @@
 import Foundation
 import FlowCore
+import IOKit.hid
 
 let usage = """
-flowctl — XS Flow mouse probe & configuration tool
+flowctl — mouse probe & configuration tool (with extras for the Amkette XS Flow)
 
 USAGE:
-  flowctl list                 List connected XS Flow HID interfaces
-  flowctl monitor              Print raw HID input from the mouse (Ctrl+C to stop)
+  flowctl list                 List connected mice and their HID interfaces
+  flowctl monitor              Print raw HID input from external mice (Ctrl+C to stop)
   flowctl run [--config PATH]  Run the remapping engine headless with a config file
   flowctl example-config       Print an example config (JSON)
-  flowctl pointer              Show the mouse's current per-device tracking speed
-  flowctl battery              Read the battery level over Bluetooth LE
+  flowctl pointer              Show each mouse's current tracking speed
+  flowctl battery              Read Bluetooth LE mice's battery levels
 
 HARDWARE (needs the 2.4G dongle or USB cable; settings are saved on the mouse).
 EXPERIMENTAL: untested on real hardware, so every command needs --experimental.
@@ -46,15 +47,23 @@ func withMonitor(readInput: Bool = true, _ body: @escaping (DeviceMonitor) -> Vo
 func hex(_ n: Int, _ width: Int = 4) -> String { String(format: "0x%0\(width)X", n) }
 
 func list(_ monitor: DeviceMonitor) {
-    if monitor.interfaces.isEmpty {
-        print("No XS Flow mouse found (Bluetooth 32C2:6621 or dongle/cable 04F3:026F/026E).")
+    let mice = PointingDeviceRegistry().mice()
+    if mice.isEmpty && monitor.interfaces.isEmpty {
+        print("No external mouse found.")
         exit(1)
     }
+    print("MICE")
+    for mouse in mice {
+        print("  \(mouse.name)  [\(mouse.transport)]  \(hex(mouse.model.vendorID)):\(hex(mouse.model.productID))\(mouse.isXSFlow ? "  (XS Flow)" : "")")
+    }
+    print("\nHID INTERFACES")
     for iface in monitor.interfaces.sorted(by: { $0.primaryUsagePage < $1.primaryUsagePage }) {
         let features = ReportDescriptor.featureReportIDs(in: iface.reportDescriptor).sorted()
+        let vid: Int = iface.property(kIOHIDVendorIDKey) ?? 0
+        let pid: Int = iface.property(kIOHIDProductIDKey) ?? 0
         print("""
-        \(iface.product)  [\(iface.known.transport.rawValue), \(iface.transportName)]
-          VID:PID       \(hex(iface.known.vendorID)):\(hex(iface.known.productID))
+        \(iface.product)  [\(iface.transport.rawValue), \(iface.transportName)]
+          VID:PID       \(hex(vid)):\(hex(pid))
           usage         page \(hex(iface.primaryUsagePage, 2)) usage \(hex(iface.primaryUsage, 2))
           feature IDs   \(features.isEmpty ? "none" : features.map(String.init).joined(separator: ", "))
           config iface  \(iface.isConfigInterface ? "yes" : "no")
@@ -74,7 +83,7 @@ case "monitor":
             // Pointer motion is noisy; only show it when asked.
             if !args.contains("--motion"),
                event.usagePage == 0x01, event.usage == 0x30 || event.usage == 0x31 { return }
-            print("[\(event.transport.rawValue)] \(event.description)")
+            print("[\(event.product) · \(event.transport.rawValue)] \(event.description)")
         }
         monitor.onChange = { print("devices: \(monitor.transports.map(\.rawValue))") }
     }
@@ -88,11 +97,11 @@ case "run":
     }
     let engine = MappingEngine(config: config)
     engine.onAction = { button, action in print("button \(button) → \(action.displayName)") }
-    engine.onDevicesChanged = { print("devices: \(engine.monitor.transports.map(\.rawValue))") }
-    do { try engine.start() } catch MappingEngine.StartError.inputMonitoringDenied {
-        fputs("Input Monitoring permission needed for this terminal (System Settings → Privacy & Security).\n", stderr)
-        exit(1)
-    } catch {
+    engine.onDevicesChanged = {
+        let mice = engine.registry.mice().map { "\($0.name)\(config.manages($0) ? "" : " (off)")" }
+        print("mice: \(mice.isEmpty ? "none" : mice.joined(separator: ", "))")
+    }
+    do { try engine.start() } catch {
         fputs("Accessibility permission needed for this terminal (System Settings → Privacy & Security).\n", stderr)
         exit(1)
     }
@@ -123,20 +132,27 @@ case "example-config":
     print(String(data: try! encoder.encode(example), encoding: .utf8)!)
 case "pointer":
     let applier = PointerApplier()
-    if let speed = applier.currentTrackingSpeed {
-        print(String(format: "Tracking speed (this mouse): %.2f", speed))
-    } else {
-        print("Mouse not found.")
+    let mice = PointingDeviceRegistry().mice()
+    if mice.isEmpty { print("No external mouse found.") }
+    for mouse in mice {
+        let speed = applier.currentTrackingSpeed { $0.registryID == mouse.registryID }
+        print("\(mouse.name): " + (speed.map { String(format: "tracking speed %.2f", $0) } ?? "no tracking speed reported"))
     }
 case "battery":
+    let names = PointingDeviceRegistry().mice().filter(\.isBluetooth).map(\.name)
+    guard !names.isEmpty else { fail("No Bluetooth mouse connected.") }
     let battery = BluetoothBattery()
-    battery.onLevel = { level in
-        print(level.map { "Battery: \($0)%" } ?? "No Bluetooth XS Flow with a battery service found.")
-        exit(level == nil ? 1 : 0)
+    battery.onChange = {
+        // Wait until every mouse reported, or the timeout below prints what we have.
+        guard names.allSatisfy({ battery.level(forDeviceNamed: $0) != nil }) else { return }
+        for name in names { print("\(name): \(battery.level(forDeviceNamed: name)!)%") }
+        exit(0)
     }
-    battery.start()
+    battery.track(names: names)
     DispatchQueue.main.asyncAfter(deadline: .now() + 10) {
-        fputs("Timed out. Is Bluetooth permission granted to this terminal?\n", stderr)
+        for name in names {
+            print("\(name): " + (battery.level(forDeviceNamed: name).map { "\($0)%" } ?? "no battery reading (no battery service, or Bluetooth permission missing)"))
+        }
         exit(1)
     }
     RunLoop.main.run()

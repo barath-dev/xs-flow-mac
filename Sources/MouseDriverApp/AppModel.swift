@@ -30,16 +30,26 @@ final class AppModel {
 
     // MARK: Devices
 
-    var transports: [Transport] = []
-    var bluetoothBattery: Int?
+    /// Connected external mice.
+    var mice: [PointingDevice] = []
+    /// Bluetooth battery levels by peripheral name.
+    var bluetoothBattery: [String: Int] = [:]
     @ObservationIgnored private let btBattery = BluetoothBattery()
 
-    /// Battery from the dongle's status report, else from the BLE Battery Service.
-    var batteryPercent: Int? {
-        hardwareStatus.map { Int($0.batteryPercent) } ?? bluetoothBattery
+    /// Battery from the XS Flow dongle's status report, else from the BLE Battery Service.
+    func battery(for mouse: PointingDevice) -> Int? {
+        if mouse.isXSFlow, !mouse.isBluetooth, let status = hardwareStatus { return Int(status.batteryPercent) }
+        return BluetoothBattery.level(in: bluetoothBattery, forDeviceNamed: mouse.name)
     }
     var connectionSummary: String {
-        transports.isEmpty ? "Not connected" : transports.map(\.rawValue).joined(separator: " + ")
+        mice.isEmpty ? "No mouse connected" : mice.map { "\($0.name) (\($0.transportLabel))" }.joined(separator: ", ")
+    }
+
+    func isCustomized(_ mouse: PointingDevice) -> Bool { config.manages(mouse) }
+
+    func setCustomized(_ model: DeviceID, _ on: Bool) {
+        config.excludedDevices.removeAll { $0 == model }
+        if !on { config.excludedDevices.append(model) }
     }
 
     // MARK: Permissions
@@ -51,7 +61,6 @@ final class AppModel {
     // MARK: Button capture ("press a button on your mouse")
 
     var isCapturing = false
-    @ObservationIgnored private var captureHandler: ((Int) -> Void)?
 
     // MARK: Hardware (dongle / cable)
 
@@ -89,21 +98,18 @@ final class AppModel {
         engine = MappingEngine(config: loaded)
         lastError = loadError
 
-        engine.onRawInput = { [weak self] event in
-            guard let self, event.isButton, event.value != 0, let handler = self.captureHandler else { return }
-            self.captureHandler = nil
-            self.isCapturing = false
-            handler(event.usage)
-        }
         engine.onAction = { [weak self] button, action in
             self?.lastAction = "Button \(button) → \(action.displayName)"
             log.notice("button \(button) → \(action.displayName, privacy: .public)")
         }
-        engine.onButtonPress = { button in
-            log.notice("HID button \(button) pressed")
+        engine.onButtonPress = { button, device in
+            log.notice("HID button \(button) pressed on \(device.name, privacy: .public)")
         }
 
-        btBattery.onLevel = { [weak self] level in self?.bluetoothBattery = level }
+        btBattery.onChange = { [weak self] in
+            guard let self else { return }
+            self.bluetoothBattery = self.btBattery.levels
+        }
         watcher.onChange = { [weak self] in self?.devicesChanged() }
         watcher.start(readInput: false)
 
@@ -203,21 +209,24 @@ final class AppModel {
     // MARK: Capture
 
     func captureButton(_ handler: @escaping (Int) -> Void) {
-        captureHandler = handler
         isCapturing = true
+        engine.captureNextButton { [weak self] button in
+            self?.isCapturing = false
+            handler(button)
+        }
     }
 
     func cancelCapture() {
-        captureHandler = nil
+        engine.cancelCapture()
         isCapturing = false
     }
 
     // MARK: Devices & hardware
 
     private func devicesChanged() {
-        transports = watcher.transports
-        log.notice("devices: \(self.connectionSummary, privacy: .public)")
-        if transports.contains(.bluetooth) { btBattery.start() } else { bluetoothBattery = nil }
+        refreshMice()
+        // The HID event system can register a new mouse a moment after IOHIDManager reports it.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in self?.refreshMice() }
         if hardwareEnabled, let iface = watcher.configInterface {
             guard hardware?.interface != iface else { return }
             let controller = HardwareController(interface: iface)
@@ -229,6 +238,15 @@ final class AppModel {
             hardware = nil
             hardwareStatus = nil
         }
+    }
+
+    private func refreshMice() {
+        engine.registry.invalidate()
+        let current = engine.registry.mice()
+        guard current != mice else { return }
+        mice = current
+        log.notice("mice: \(self.connectionSummary, privacy: .public)")
+        btBattery.track(names: mice.filter(\.isBluetooth).map(\.name))
     }
 
     /// Runs a hardware command, tracking busy state and reporting the result.

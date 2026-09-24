@@ -8,7 +8,12 @@ struct MenuBarView: View {
     var body: some View {
         @Bindable var model = model
 
-        Text("XS Flow · \(model.connectionSummary)\(batteryText)")
+        if model.mice.isEmpty {
+            Text("No mouse connected")
+        }
+        ForEach(model.mice) { mouse in
+            Text("\(mouse.name) · \(mouse.transportLabel)\(batteryText(mouse))\(model.isCustomized(mouse) ? "" : " · off")")
+        }
         if !model.permissionsGranted {
             Text("⚠︎ Permissions needed. Open Settings")
         } else if !model.engineRunning {
@@ -41,8 +46,9 @@ struct MenuBarView: View {
         .keyboardShortcut("q")
     }
 
-    private var batteryText: String {
-        guard let percent = model.batteryPercent else { return "" }
-        return " · \(percent)%\(model.hardwareStatus?.isCharging == true ? " ⚡︎" : "")"
+    private func batteryText(_ mouse: PointingDevice) -> String {
+        guard let percent = model.battery(for: mouse) else { return "" }
+        let charging = mouse.isXSFlow && !mouse.isBluetooth && model.hardwareStatus?.isCharging == true
+        return " · \(percent)%\(charging ? " ⚡︎" : "")"
     }
 }

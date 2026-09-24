@@ -10,7 +10,7 @@ struct ScrollSettingsView: View {
             Section {
                 ScrollFields(settings: $model.config.scroll)
             } footer: {
-                Text("Applies to the XS Flow only. Your trackpad keeps the system scroll direction. Apps can override this in the Apps tab.")
+                Text("Applies to the mice switched on in the Mice tab. Your trackpad keeps the system scroll direction. Apps can override this in the Apps tab.")
             }
         }
         .formStyle(.grouped)
@@ -39,9 +39,9 @@ struct PointerView: View {
         @Bindable var model = model
         Form {
             Section {
-                Toggle("Custom tracking speed for this mouse", isOn: Binding(
+                Toggle("Custom tracking speed for your mice", isOn: Binding(
                     get: { model.config.pointer.trackingSpeed != nil },
-                    set: { model.config.pointer.trackingSpeed = $0 ? (PointerApplier().currentTrackingSpeed ?? 1) : nil }
+                    set: { model.config.pointer.trackingSpeed = $0 ? (PointerApplier().currentTrackingSpeed(where: model.isCustomized) ?? 1) : nil }
                 ))
                 if let speed = model.config.pointer.trackingSpeed {
                     LabeledContent("Tracking speed") {
@@ -53,7 +53,7 @@ struct PointerView: View {
                     }
                 }
             } footer: {
-                Text("Overrides System Settings → Mouse → Tracking speed for the XS Flow only. Turn it off to restore the system value.")
+                Text("Overrides System Settings → Mouse → Tracking speed for the mice switched on in the Mice tab. Turn it off to restore the system value.")
             }
 
             Section {
@@ -70,7 +70,7 @@ struct PointerView: View {
                 Text("0 gives constant, notch-by-notch scrolling. Higher values scroll further when you spin the wheel fast.")
             }
 
-            if model.transports.contains(where: { $0 != .bluetooth }) {
+            if model.hardware != nil {
                 Section {
                     Text("The sensor's own DPI is set in the Hardware tab.")
                         .foregroundStyle(.secondary)
