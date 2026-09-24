@@ -51,4 +51,8 @@ Config lives in `~/Library/Application Support/MouseDriver/config.json`. The app
 * `Sources/flowctl`: the CLI.
 * `Tests/FlowCoreTests`: run with `swift test`. Includes golden vectors generated from the vendor web app's own code.
 
+## License
+
+GPL-3.0. See [LICENSE](LICENSE).
+
 Not affiliated with Amkette.
